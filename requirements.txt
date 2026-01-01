@@ -1,7 +1,6 @@
 # Production dependencies - pinned versions for reproducibility
 wikipedia-api==0.6.0
 openai==1.12.0
-elevenlabs==0.2.27
+elevenlabs>=0.2.27
 pydub==0.25.1
-# For Python 3.13+: audioop module was removed, audioop-lts provides compatibility
 audioop-lts; python_version >= '3.13'

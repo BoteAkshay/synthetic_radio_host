@@ -20,12 +20,12 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub")
 
 if TYPE_CHECKING:
     from openai import OpenAI
-    from elevenlabs import ElevenLabs
+    from elevenlabs import Client as ElevenLabs
     from pydub import AudioSegment
 
 try:
     from openai import OpenAI
-    from elevenlabs import ElevenLabs
+    from elevenlabs import Client as ElevenLabs
     from pydub import AudioSegment
     import wikipediaapi
 except ImportError as e:
