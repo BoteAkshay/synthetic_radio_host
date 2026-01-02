@@ -1,31 +1,22 @@
 """
 Synthetic Radio Host Generator - Core Functions
 """
-__version__ = "1.1.0"
+__version__ = "2.0.1"
 
 import os
 import re
 import io
 import logging
-import warnings
 from functools import reduce
 from operator import add
 from typing import List
 
-warnings.filterwarnings("ignore", category=UserWarning, module="elevenlabs")
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub")
+from openai import OpenAI
+from elevenlabs.client import ElevenLabs
+from pydub import AudioSegment
+import wikipediaapi
 
-try:
-    from openai import OpenAI
-    from elevenlabs import generate, set_api_key
-    from pydub import AudioSegment
-    import wikipediaapi
-except ImportError as e:
-    raise ImportError(
-        f"Required dependencies not installed: {e}\n"
-        "Install with: pip install wikipedia-api openai elevenlabs pydub"
-    ) from e
-
+logger = logging.getLogger(__name__)
 
 # ======================
 # Configuration
@@ -41,39 +32,33 @@ CONFIG = {
 
     "ELEVENLABS_MODEL": "eleven_multilingual_v2",
 
-    # 🎙️ Speaker configuration
     "SPEAKER_A_NAME": "Vijay",
     "SPEAKER_B_NAME": "Neha",
+
     "VOICE_A": "pNInz6obpgDQGcFmaJgB",
     "VOICE_B": "21m00Tcm4TlvDq8ikWAM",
 
     "OUTPUT_FILENAME": "synthetic_radio_host.mp3",
 }
 
-logger = logging.getLogger(__name__)
-
-
 # ======================
 # Wikipedia
 # ======================
 
-def fetch_wikipedia_article(title: str, max_chars: int = CONFIG["WIKIPEDIA_MAX_CHARS"]) -> str:
-    logger.info(f"Fetching Wikipedia article: {title}")
-
+def fetch_wikipedia_article(title: str) -> str:
     wiki = wikipediaapi.Wikipedia(
-        user_agent="SyntheticRadioHost/1.1",
+        user_agent="SyntheticRadioHost/2.0.1",
         language="en",
     )
 
     page = wiki.page(title.strip())
     if not page.exists():
-        raise ValueError(f"Wikipedia page not found: {title}")
+        raise ValueError("Wikipedia page not found")
 
-    text = page.text[:max_chars]
-    if len(text) < 200:
-        raise ValueError("Wikipedia article too short to generate script")
+    text = page.text[:CONFIG["WIKIPEDIA_MAX_CHARS"]]
+    if len(text) < 300:
+        raise ValueError("Wikipedia article too short")
 
-    logger.info(f"Wikipedia content loaded ({len(text)} chars)")
     return text
 
 
@@ -82,35 +67,27 @@ def fetch_wikipedia_article(title: str, max_chars: int = CONFIG["WIKIPEDIA_MAX_C
 # ======================
 
 def generate_script_prompt(wiki_text: str) -> str:
-    min_words, max_words = CONFIG["SCRIPT_TARGET_WORDS"]
-    min_turns, max_turns = CONFIG["SCRIPT_TARGET_TURNS"]
-
-    speaker_a = CONFIG["SPEAKER_A_NAME"]
-    speaker_b = CONFIG["SPEAKER_B_NAME"]
+    a = CONFIG["SPEAKER_A_NAME"]
+    b = CONFIG["SPEAKER_B_NAME"]
+    wmin, wmax = CONFIG["SCRIPT_TARGET_WORDS"]
+    tmin, tmax = CONFIG["SCRIPT_TARGET_TURNS"]
 
     return f"""
-You are a creative Indian radio show script writer.
+You are a professional Indian FM radio script writer.
 
-TASK:
-Generate a natural-sounding Hinglish conversation
-between two radio hosts named {speaker_a} and {speaker_b}.
+Generate a natural Hinglish conversation
+between two radio hosts: {a} and {b}.
 
-HARD CONSTRAINTS:
-- {min_words}–{max_words} words total
-- {min_turns}–{max_turns} dialogue turns
-- Conversational, spoken style only
-
-STYLE (VERY IMPORTANT):
-- Casual Hinglish
-- Natural pauses
-- Fillers like: achcha, yaar, haan, matlab
-- Light laughter like "haha"
-- No formal language
-- Short spoken sentences
+MANDATORY:
+- Start with: "{a}: Hi hello dosto, main {a} hoon..."
+- End with friendly goodbyes from both hosts
+- {wmin}-{wmax} words
+- {tmin}-{tmax} turns
+- Spoken Hinglish only
 
 FORMAT (STRICT):
-{speaker_a}: ...
-{speaker_b}: ...
+{a}: ...
+{b}: ...
 
 TOPIC:
 {wiki_text}
@@ -118,23 +95,20 @@ TOPIC:
 
 
 def generate_script(prompt: str, client: OpenAI) -> str:
-    logger.info("Generating script with OpenAI")
-
     response = client.chat.completions.create(
         model=CONFIG["OPENAI_MODEL"],
         messages=[
-            {"role": "system", "content": "You write conversational Hinglish radio scripts."},
+            {"role": "system", "content": "You write natural Hinglish radio conversations."},
             {"role": "user", "content": prompt},
         ],
         temperature=CONFIG["OPENAI_TEMPERATURE"],
-        max_tokens=1000,
+        max_tokens=1200,
     )
 
     script = response.choices[0].message.content.strip()
     if not script:
-        raise ValueError("Empty script generated")
+        raise RuntimeError("Empty script")
 
-    logger.info(f"Script generated ({len(script.splitlines())} lines)")
     return script
 
 
@@ -143,43 +117,32 @@ def generate_script(prompt: str, client: OpenAI) -> str:
 # ======================
 
 def clean_for_tts(line: str) -> str:
-    speaker_a = CONFIG["SPEAKER_A_NAME"]
-    speaker_b = CONFIG["SPEAKER_B_NAME"]
+    a = CONFIG["SPEAKER_A_NAME"]
+    b = CONFIG["SPEAKER_B_NAME"]
 
-    line = re.sub(rf"^({speaker_a}|{speaker_b}):\s*", "", line)
-    line = re.sub(r"\(laughs?\)|\(chuckles?\)", " haha ", line, flags=re.I)
-    line = line.replace("…", ", ")
-    line = re.sub(r"[!?]{2,}", "!", line)
+    line = re.sub(rf"^({a}|{b}):\s*", "", line)
+    line = re.sub(r"\(.*?\)", "", line)
     line = re.sub(r"\s+", " ", line)
 
     return line.strip()
 
 
-def configure_elevenlabs(api_key: str) -> None:
-    if not api_key:
-        raise ValueError("ELEVENLABS_API_KEY missing")
-    set_api_key(api_key)
-    logger.info("ElevenLabs API configured")
-
-
 # ======================
-# Audio Generation
+# Audio Generation (SMOOTH)
 # ======================
 
 def generate_audio_segments(script: str) -> List[AudioSegment]:
-    speaker_a = CONFIG["SPEAKER_A_NAME"]
-    speaker_b = CONFIG["SPEAKER_B_NAME"]
+    client = ElevenLabs()
 
-    lines = [l for l in script.splitlines() if l.strip()]
-    audio_segments: List[AudioSegment] = []
+    a = CONFIG["SPEAKER_A_NAME"]
+    b = CONFIG["SPEAKER_B_NAME"]
 
-    logger.info(f"Generating audio for {len(lines)} lines")
+    segments: List[AudioSegment] = []
 
-    for idx, line in enumerate(lines, start=1):
-
-        if line.startswith(f"{speaker_a}:"):
+    for line in script.splitlines():
+        if line.startswith(f"{a}:"):
             voice = CONFIG["VOICE_A"]
-        elif line.startswith(f"{speaker_b}:"):
+        elif line.startswith(f"{b}:"):
             voice = CONFIG["VOICE_B"]
         else:
             continue
@@ -188,31 +151,26 @@ def generate_audio_segments(script: str) -> List[AudioSegment]:
         if not text:
             continue
 
-        logger.info(f"TTS {idx}/{len(lines)} | voice={voice}")
-
-        audio_bytes = generate(
+        audio_bytes = client.text_to_speech.convert(
             text=text,
-            voice=voice,
-            model=CONFIG["ELEVENLABS_MODEL"],
+            voice_id=voice,
+            model_id=CONFIG["ELEVENLABS_MODEL"],
+            output_format="mp3_44100_128",
             voice_settings={
-                "stability": 0.35,
-                "similarity_boost": 0.75,
-                "style": 0.45,
+                "stability": 0.30,
+                "similarity_boost": 0.80,
+                "style": 0.55,
                 "use_speaker_boost": True
             }
         )
 
         segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        segments.append(segment + AudioSegment.silent(220))
 
-        # 🎧 Natural pause between turns
-        pause = AudioSegment.silent(duration=250)
-        audio_segments.append(segment + pause)
-
-    if not audio_segments:
+    if not segments:
         raise RuntimeError("No audio generated")
 
-    logger.info("Audio generation completed")
-    return audio_segments
+    return segments
 
 
 # ======================
@@ -220,15 +178,13 @@ def generate_audio_segments(script: str) -> List[AudioSegment]:
 # ======================
 
 def combine_and_export_audio(audio_segments: List[AudioSegment], output_file: str) -> None:
-    logger.info("Combining audio segments")
-
     final_audio = reduce(add, audio_segments)
+    final_audio = final_audio.normalize(headroom=1.5)
 
-    # 🎚️ Light normalization for radio feel
-    final_audio = final_audio.normalize(headroom=2.0)
-
-    duration = len(final_audio) / 1000
     final_audio.export(output_file, format="mp3", bitrate="192k")
 
-    size_mb = os.path.getsize(output_file) / (1024 * 1024)
-    logger.info(f"Exported {output_file} | {duration:.1f}s | {size_mb:.2f}MB")
+    logger.info(
+        f"Exported {output_file} | "
+        f"{len(final_audio) / 1000:.1f}s | "
+        f"{os.path.getsize(output_file) / (1024 * 1024):.2f} MB"
+    )
