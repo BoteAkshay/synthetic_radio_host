@@ -132,7 +132,11 @@ def clean_for_tts(line: str) -> str:
 # ======================
 
 def generate_audio_segments(script: str) -> List[AudioSegment]:
-    client = ElevenLabs()
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY not set in environment")
+
+    client = ElevenLabs(api_key=api_key)
 
     a = CONFIG["SPEAKER_A_NAME"]
     b = CONFIG["SPEAKER_B_NAME"]
@@ -151,7 +155,7 @@ def generate_audio_segments(script: str) -> List[AudioSegment]:
         if not text:
             continue
 
-        audio_bytes = client.text_to_speech.convert(
+        audio_stream = client.text_to_speech.convert(
             text=text,
             voice_id=voice,
             model_id=CONFIG["ELEVENLABS_MODEL"],
@@ -164,7 +168,14 @@ def generate_audio_segments(script: str) -> List[AudioSegment]:
             }
         )
 
-        segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        # consume streaming generator → bytes
+        audio_bytes = b"".join(chunk for chunk in audio_stream)
+
+        segment = AudioSegment.from_file(
+            io.BytesIO(audio_bytes),
+            format="mp3"
+        )
+
         segments.append(segment + AudioSegment.silent(220))
 
     if not segments:
