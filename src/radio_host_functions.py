@@ -85,6 +85,14 @@ MANDATORY:
 - {tmin}-{tmax} turns
 - Spoken Hinglish only
 
+STYLE RULES: 
+- Use casual Hinglish, not pure Hindi or English
+- Frequently use fillers like: "achcha", "umm", "arre", "haan", "yaar", "matlab"
+- Add light interruptions, incomplete sentences, and informal reactions 
+- Add occasional laughter cues like "(laughs)" or "(chuckles)" 
+- Avoid formal explanations or Wikipedia-style narration 
+- Keep sentences short and conversational
+
 FORMAT (STRICT):
 {a}: ...
 {b}: ...
@@ -123,6 +131,7 @@ def clean_for_tts(line: str) -> str:
     line = re.sub(rf"^({a}|{b}):\s*", "", line)
     line = re.sub(r"\(.*?\)", "", line)
     line = re.sub(r"\s+", " ", line)
+    line = re.sub(r"\(laughs?\)|\(chuckles?\)", " haha ", line, flags=re.I)
 
     return line.strip()
 
